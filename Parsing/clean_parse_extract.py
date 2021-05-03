@@ -239,7 +239,7 @@ def _fixed_window(data_file,windowsize=0,log_type="HDFS"):
         if time >= start_time and time <= end_time: #We are within a window
             fix_window_label.append("window"+str(count))
         elif time > end_time: #We are in the next window: 
-            start_time = time
+            start_time = start_time+pd.DateOffset(hours=window_size) #New Start window += 1 Window 
             end_time = start_time+pd.DateOffset(hours=window_size)
             count += 1
             fix_window_label.append("window"+str(count))
@@ -258,6 +258,104 @@ def _fixed_window(data_file,windowsize=0,log_type="HDFS"):
     y_data = None 
     
     print("Number of windows: ",len(x_data))
+    print("Number of window slides: ", count-1)
+    
+    return (x_data, y_data, event_df)
+    
+#2.3 Load by Sliding window
+def _sliding_window(data_file,windowsize=0,windowslide=0,log_type="HDFS"):
+    ###
+    ###Available to both HDFS and Zookeeper
+    ###Seperate un-labelled data by Sliding Window
+    ###
+    ###Parameters: data_file, str (file path to cleaned datafile)
+    ###Parameters: windowsize, int (fixed window size in hours)
+    ###Parameters: windowslide, int (how many hours to sliiiiiideeeeee)
+    ###Parameters: log_type, str (HDFS or Zookeeper)
+    ###
+    ###Output: x_data = array of list, each row of array is a blk_id with list being the eventsequence
+    ###Output: y_data = None
+    ###Output: event_df = pd.df of x_data with window label
+    
+    #Sliding Window Parameters
+    window_size = windowsize #In Hours
+    window_slide = windowslide #In Hours 
+
+    #For Formatting DateTime
+    iterator = 0 
+
+    #Labelling 
+    count = 1  #Number label for Windows (Ex: window1,window2 ...)
+
+    #Reading in Data
+    struct_log = pd.read_csv(data_file)
+    data=struct_log[["EventId","Date","Time"]] #Subset with EventId, Date and Time
+
+    #Create DateTime Column for HDFS File:
+    if log_type == "HDFS":
+        data["Time"] = data["Time"].astype(str)
+        #Formatting DateTime
+        for time in data["Time"]:
+            if len(time) < 6: #Not in HH:MM:SS format
+                data.Time[iterator] = (6 - len(time))*"0" + time #Fill in empty values with 0
+            iterator += 1
+        data["DateTime"] =  "0"+data["Date"].astype(str)+data["Time"]
+        data["DateTime"]= pd.to_datetime(data["DateTime"],format='%y%m%d%H%M%S')
+    #Create DateTime Column for Zookeeper File"
+    elif log_type == "Zookeeper":
+        holder = []
+        for i in range(0,len(data)):       
+            holder.append(pd.to_datetime(data["Date"][i] +" "+ data["Time"][i].split(",")[0],format = '%Y/%m/%d %H:%M:%S'))
+        data["DateTime"] = holder
+
+    #Initializing Time
+    data = data.sort_values("DateTime") #Sort the DateTime so labelling is sequential 
+    start_time = data["DateTime"][0] #Earlierst Date 
+    end_time = start_time+pd.DateOffset(hours=window_size) #End of Window
+    stop_slide = []
+    event_dict = OrderedDict() #Create empty dictionary
+    test = 0 
+    sd = []
+    #Sliding Window Workframe
+    while (start_time not in stop_slide): #while (not at end of df) or (not repeating)
+        slide_window_label = []
+        #Fixed Window Workframe 
+        #Create a list of labels
+        for time in data["DateTime"]:
+            if time >= start_time and time <= end_time: #We are within a window
+                slide_window_label.append("window"+str(count))
+            elif time > end_time:
+                while time > end_time: #In-case there are large time gaps in logs
+                    start_time = start_time+pd.DateOffset(hours=window_size)
+                    end_time = start_time+pd.DateOffset(hours=window_size)
+                count += 1
+                slide_window_label.append("window"+str(count))
+                sd.append(start_time)
+            else: #we are below start time NO RETROGRADING
+                slide_window_label.append("Retrograde")
+            stop_slide.append(start_time)
+        #End of Fixed Window Workframe
+
+        #Add window_id to dataframe
+        data["window_id"] = slide_window_label
+        #Group Events by window_id
+        for idx,row in data.iterrows(): #For each row in int_struct_log 
+            if not row["window_id"] in event_dict: #Check if id exists already
+                event_dict[row["window_id"]] = [] 
+            event_dict[row["window_id"]].append(row['EventId']) #Add corresponding EventId to blk_id
+
+        #Reset
+        start_time = data["DateTime"][0]+pd.DateOffset(hours=window_slide) #Earlierst Date 
+        end_time = start_time+pd.DateOffset(hours=window_size) #End of Window
+        test +=1
+    #End of Sliding Workframe
+    event_df = pd.DataFrame(list(event_dict.items()), columns=['window_id', 'EventSequence']) #Convert data_dict into data_frame
+    event_df = event_df[event_df.window_id  != "Retrograde"] 
+    x_data = event_df['EventSequence'].values
+    y_data = None 
+
+    print("Number of windows: ",len(x_data))
+    print("Number of window slides: ", count-1)
     
     return (x_data, y_data, event_df)
     
